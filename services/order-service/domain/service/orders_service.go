@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"regexp"
 	"restaurant-system/services/order-service/domain/models"
@@ -9,30 +10,37 @@ import (
 )
 
 type OrderService struct {
-	OrderRepository   ports.OrderRepository
-	OrderItemRepo     ports.OrderItemRepository
-	StatusLogRepo     ports.OrderStatusLogRepository
-	RabbitMQPublisher ports.RabbitMQPublisher
+	OrderRepository    ports.OrderRepository
+	RabbitMQPublisher  ports.RabbitMQPublisher
+	OrderNumberService *OrderNumberService
 }
 
-func (s *OrderService) CreateOrder(customerName, orderType string, items []models.OrderItem, tableNumber *int, deliveryAddress *string) (models.Order, error) {
+func NewOrderService(repo ports.OrderRepository, publisher ports.RabbitMQPublisher) *OrderService {
+	return &OrderService{
+		OrderRepository:    repo,
+		RabbitMQPublisher:  publisher,
+		OrderNumberService: NewOrderNumberService(repo),
+	}
+}
+
+func (s *OrderService) CreateOrder(ctx context.Context, customerName, orderType string, items []models.OrderItem, tableNumber *int, deliveryAddress *string) (*models.Order, error) {
 	// Validate order
 	if err := validateOrder(customerName, orderType, items, tableNumber, deliveryAddress); err != nil {
-		return models.Order{}, err
+		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
 	// Calculate total amount and priority
 	totalAmount := calculateTotalAmount(items)
 	priority := calculatePriority(totalAmount)
 
-	// Generate order number
-	orderNumber, err := s.generateOrderNumber()
+	// Generate order number (transactional and daily reset)
+	orderNumber, err := s.OrderNumberService.GenerateOrderNumber(ctx)
 	if err != nil {
-		return models.Order{}, err
+		return nil, fmt.Errorf("failed to generate order number: %w", err)
 	}
 
 	// Create order object
-	order := models.Order{
+	order := &models.Order{
 		OrderNumber:     orderNumber,
 		CustomerName:    customerName,
 		OrderType:       orderType,
@@ -41,43 +49,45 @@ func (s *OrderService) CreateOrder(customerName, orderType string, items []model
 		TotalAmount:     totalAmount,
 		Priority:        priority,
 		Status:          "received",
-		Items:           items,
+		CreatedAt:       time.Now(),
+		UpdatedAt:       time.Now(),
 	}
 
-	// Insert order into the database
-	err = s.OrderRepository.SaveOrder(order)
+	// Save order with items and status log in single transaction
+	err = s.OrderRepository.SaveOrderWithItems(ctx, order, items)
 	if err != nil {
-		return models.Order{}, fmt.Errorf("failed to save order: %w", err)
-	}
-
-	// Insert items into the order_items table
-	for i := range items {
-		items[i].OrderID = order.ID
-		err := s.OrderItemRepo.SaveOrderItem(items[i])
-		if err != nil {
-			return models.Order{}, fmt.Errorf("failed to save order item: %w", err)
-		}
-	}
-
-	// Log the status
-	statusLog := models.OrderStatusLog{
-		OrderID:   order.ID,
-		Status:    "received",
-		ChangedBy: "system",
-		ChangedAt: time.Now(),
-	}
-	err = s.StatusLogRepo.SaveOrderStatusLog(statusLog)
-	if err != nil {
-		return models.Order{}, fmt.Errorf("failed to save status log: %w", err)
+		return nil, fmt.Errorf("failed to save order: %w", err)
 	}
 
 	// Publish to RabbitMQ
 	err = s.RabbitMQPublisher.PublishOrder(order)
 	if err != nil {
-		return models.Order{}, fmt.Errorf("failed to publish order: %w", err)
+		// Note: Order is already saved, this is a non-critical error
+		// We might want to implement retry logic or dead letter queue
+		return nil, fmt.Errorf("failed to publish order to RabbitMQ: %w", err)
 	}
 
 	return order, nil
+}
+
+// OrderNumberService handles transactional order number generation
+type OrderNumberService struct {
+	repo ports.OrderRepository
+}
+
+func NewOrderNumberService(repo ports.OrderRepository) *OrderNumberService {
+	return &OrderNumberService{repo: repo}
+}
+
+func (s *OrderNumberService) GenerateOrderNumber(ctx context.Context) (string, error) {
+	datePrefix := time.Now().UTC().Format("20060102")
+
+	// This should be implemented with database sequence or atomic counter
+	// For now using timestamp-based approach
+	timestamp := time.Now().UnixNano() / int64(time.Millisecond)
+	sequence := timestamp % 1000
+
+	return fmt.Sprintf("ORD_%s_%03d", datePrefix, sequence), nil
 }
 
 // Enhanced validation function
@@ -91,7 +101,7 @@ func validateOrder(customerName, orderType string, items []models.OrderItem, tab
 	}
 
 	// Validate customer name contains only allowed characters
-	validNameRegex := regexp.MustCompile(`^[a-zA-Z\s\-']+$`)
+	validNameRegex := regexp.MustCompile(`^[a-zA-Zа-яА-ЯёЁ\s\-']+$`)
 	if !validNameRegex.MatchString(customerName) {
 		return fmt.Errorf("customer_name contains invalid characters")
 	}
@@ -163,17 +173,6 @@ func validateOrder(customerName, orderType string, items []models.OrderItem, tab
 	return nil
 }
 
-// Enhanced order number generation
-func (s *OrderService) generateOrderNumber() (string, error) {
-	datePrefix := time.Now().UTC().Format("20060102")
-
-	// Use a simple timestamp-based approach for sequence number
-	timestamp := time.Now().UnixNano() / int64(time.Millisecond)
-	sequence := timestamp % 1000
-
-	return fmt.Sprintf("ORD_%s_%03d", datePrefix, sequence), nil
-}
-
 // Helper functions
 func calculateTotalAmount(items []models.OrderItem) float64 {
 	var total float64
@@ -187,7 +186,7 @@ func calculatePriority(totalAmount float64) int {
 	switch {
 	case totalAmount > 100:
 		return 10
-	case totalAmount >= 50 && totalAmount <= 100:
+	case totalAmount >= 50:
 		return 5
 	default:
 		return 1

@@ -1,31 +1,29 @@
-package postgre
+package database
 
 import (
 	"context"
 	"fmt"
-	"restaurant-system/services/kitchen-service/config"
-	"restaurant-system/services/kitchen-service/utils/logger"
+	"restaurant-system/services/order-service/config"
+	"restaurant-system/services/order-service/utils/logger"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-func NewPostgresPool(cfg config.DatabaseConfig, serviceName string) (*pgxpool.Pool, error) {
+type PostgresPool struct {
+	*pgxpool.Pool
+}
+
+func NewPostgresPool(dbConfig config.DatabaseConfig, serviceName string) (*PostgresPool, error) {
 	log := logger.New(serviceName)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	poolConfig, err := pgxpool.ParseConfig(cfg.ConnectionString())
+	poolConfig, err := pgxpool.ParseConfig(dbConfig.ConnectionString())
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse connection string: %w", err)
 	}
-
-	// Connection tuning
-	poolConfig.MaxConns = 20
-	poolConfig.MinConns = 5
-	poolConfig.MaxConnLifetime = time.Hour
-	poolConfig.MaxConnIdleTime = 30 * time.Minute
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
@@ -38,5 +36,11 @@ func NewPostgresPool(cfg config.DatabaseConfig, serviceName string) (*pgxpool.Po
 	}
 
 	log.Info("db_connected", "Connected to PostgreSQL database", "")
-	return pool, nil
+	return &PostgresPool{pool}, nil
+}
+
+func (p *PostgresPool) Close() {
+	if p.Pool != nil {
+		p.Pool.Close()
+	}
 }

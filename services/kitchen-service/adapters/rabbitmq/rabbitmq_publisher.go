@@ -1,57 +1,36 @@
 package rabbitmq
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	domain "restaurant-system/services/kitchen-service/domain/models"
-
-	amqp "github.com/rabbitmq/amqp091-go"
+	"restaurant-system/services/kitchen-service/utils/logger"
 )
 
-type RabbitPublisher struct {
-	channel  *amqp.Channel
-	exchange string
+type NotificationPublisher struct {
+	client *Client
+	logger *logger.Logger
 }
 
-func NewRabbitPublisher(ch *amqp.Channel, exchange string) *RabbitPublisher {
-	return &RabbitPublisher{channel: ch, exchange: exchange}
+func NewNotificationPublisher(client *Client, serviceName string) *NotificationPublisher {
+	return &NotificationPublisher{
+		client: client,
+		logger: logger.New(serviceName),
+	}
 }
 
-// публикуем OrderCreated
-func (p *RabbitPublisher) PublishOrderCreated(ctx context.Context, event domain.OrderCreated) error {
-	body, err := json.Marshal(event)
+func (p *NotificationPublisher) PublishStatusUpdate(update domain.OrderStatus) error {
+	messageBytes, err := json.Marshal(update)
 	if err != nil {
-		return fmt.Errorf("failed to marshal OrderCreated: %w", err)
+		return fmt.Errorf("failed to marshal status update: %w", err)
 	}
 
-	return p.channel.PublishWithContext(ctx,
-		p.exchange,      // exchange
-		"order.created", // routing key
-		false,           // mandatory
-		false,           // immediate
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-		},
-	)
-}
-
-// публикуем OrderStatusUpdated
-func (p *RabbitPublisher) PublishStatusUpdate(ctx context.Context, event domain.OrderStatusUpdated) error {
-	body, err := json.Marshal(event)
+	err = p.client.Publish("notifications_fanout", "", messageBytes)
 	if err != nil {
-		return fmt.Errorf("failed to marshal OrderStatusUpdated: %w", err)
+		p.logger.Error("notification_publish_failed", "Failed to publish status update", "", err)
+		return fmt.Errorf("failed to publish notification: %w", err)
 	}
 
-	return p.channel.PublishWithContext(ctx,
-		p.exchange,     // exchange
-		"order.status", // routing key
-		false,
-		false,
-		amqp.Publishing{
-			ContentType: "application/json",
-			Body:        body,
-		},
-	)
+	p.logger.Debug("notification_published", "Status update published", "")
+	return nil
 }

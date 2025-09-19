@@ -44,6 +44,7 @@ func (l *consoleLogger) Info(service, action, message, requestID string) {
 	}
 	outputLog(logEntry)
 }
+func (l *consoleLogger) Debug(service, action, message, requestID string) {}
 
 func (l *consoleLogger) Error(service, action, message, requestID string, err error) {
 	logEntry := LogEntry{

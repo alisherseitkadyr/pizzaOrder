@@ -1,82 +1,92 @@
 package rabbitmq
 
 import (
-	"context"
+	"encoding/json"
 	"fmt"
-	"restaurant-system/services/kitchen-service/domain/ports"
-
-	"github.com/rabbitmq/amqp091-go"
+	domain "restaurant-system/services/kitchen-service/domain/models"
+	"restaurant-system/services/kitchen-service/utils/logger"
 )
 
-type RabbitMQConsumer struct {
-	conn    *amqp091.Connection
-	channel *amqp091.Channel
+type KitchenConsumer struct {
+	client     *Client
+	logger     *logger.Logger
+	prefetch   int
+	orderTypes []string
 }
 
-func NewRabbitMQConsumer(conn *amqp091.Connection) (ports.MessageConsumer, error) {
-	ch, err := conn.Channel()
-	if err != nil {
-		return nil, fmt.Errorf("failed to open channel: %w", err)
+func NewKitchenConsumer(client *Client, prefetch int, orderTypes []string) (*KitchenConsumer, error) {
+	consumer := &KitchenConsumer{
+		client:     client,
+		logger:     logger.New("kitchen-consumer"),
+		prefetch:   prefetch,
+		orderTypes: orderTypes,
 	}
-	return &RabbitMQConsumer{conn: conn, channel: ch}, nil
+
+	// Declare kitchen queue
+	if err := consumer.setupQueue(); err != nil {
+		return nil, err
+	}
+
+	return consumer, nil
 }
 
-func (c *RabbitMQConsumer) ConsumeOrders(ctx context.Context, handler func(message []byte) error) error {
-	msgs, err := c.channel.Consume(
-		"orders",
-		"",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
+func (c *KitchenConsumer) setupQueue() error {
+	// Declare queue
+	queue, err := c.client.DeclareQueue("kitchen_orders")
 	if err != nil {
-		return fmt.Errorf("failed to consume orders: %w", err)
+		return err
 	}
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg := <-msgs:
-				_ = handler(msg.Body)
-			}
+
+	// Bind to orders_topic exchange with appropriate routing keys
+	routingKeys := c.generateRoutingKeys()
+	for _, routingKey := range routingKeys {
+		if err := c.client.BindQueue(queue.Name, "orders_topic", routingKey); err != nil {
+			return err
 		}
-	}()
+	}
+
 	return nil
 }
 
-func (c *RabbitMQConsumer) ConsumeNotifications(ctx context.Context, handler func(message []byte) error) error {
-	q, err := c.channel.QueueDeclare("", false, true, true, false, nil)
-	if err != nil {
-		return fmt.Errorf("failed to declare temp queue: %w", err)
+func (c *KitchenConsumer) generateRoutingKeys() []string {
+	if len(c.orderTypes) == 0 {
+		// Handle all order types
+		return []string{"kitchen.*.*"}
 	}
-	err = c.channel.QueueBind(q.Name, "", "status_updates", false, nil)
-	if err != nil {
-		return fmt.Errorf("failed to bind to status_updates exchange: %w", err)
+
+	var keys []string
+	for _, orderType := range c.orderTypes {
+		keys = append(keys, fmt.Sprintf("kitchen.%s.*", orderType))
 	}
-	msgs, err := c.channel.Consume(
-		q.Name,
-		"",
-		true,
-		false,
-		false,
-		false,
-		nil,
-	)
+	return keys
+}
+
+func (c *KitchenConsumer) Consume() (<-chan domain.OrderMessage, error) {
+	msgs, err := c.client.Consume("kitchen_orders", "kitchen-worker")
 	if err != nil {
-		return fmt.Errorf("failed to consume notifications:%w", err)
+		return nil, err
 	}
+
+	orderChan := make(chan domain.OrderMessage)
 	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case msg := <-msgs:
-				_ = handler(msg.Body)
+		for delivery := range msgs {
+			var order domain.OrderCreated
+			if err := json.Unmarshal(delivery.Body, &order); err != nil {
+				c.logger.Error("message_decode_failed", "Failed to decode order message", "", err)
+				delivery.Nack(false, true) // Requeue
+				continue
 			}
+
+			// Create message with delivery for acknowledgment
+			orderMsg := domain.OrderMessage{
+				OrderCreated: order,
+				Delivery:     delivery,
+			}
+
+			orderChan <- orderMsg
 		}
+		close(orderChan)
 	}()
-	return nil
+
+	return orderChan, nil
 }

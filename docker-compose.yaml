@@ -5,14 +5,14 @@ services:
     image: postgres:15
     container_name: restaurant_postgres
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: restaurant_system  # Add this to create the database
+      POSTGRES_USER: restaurant_user
+      POSTGRES_PASSWORD: restaurant_pass
+      POSTGRES_DB: restaurant_db
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql  # Add this line
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - restaurant_net
 
@@ -25,21 +25,8 @@ services:
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
-  # application:
-  #   build: 
-  #     context: .
-  #     dockerfile: Dockerfile
-  #   container_name: app
-  #   environment:
-  #     DATABASE_URL: postgres://postgres:postgres@postgres:5432/orders_db?sslmode=disable
-  #     RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-  #   depends_on:
-  #     - postgres
-  #     - rabbitmq
-  #   ports:
-  #     - "3000:3000"
-  #   networks:
-  #     - restaurant_net
+    networks:
+      - restaurant_net
 
 volumes:
   postgres_data:
@@ -47,6 +34,3 @@ volumes:
 networks:
   restaurant_net:
     driver: bridge
-
-
-

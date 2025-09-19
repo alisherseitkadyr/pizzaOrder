@@ -1,17 +1,13 @@
 package ports
 
 import (
+	"context"
 	"restaurant-system/services/order-service/domain/models"
 )
 
 type OrderRepository interface {
-	SaveOrder(order models.Order) error
-}
-
-type OrderItemRepository interface {
-	SaveOrderItem(item models.OrderItem) error
-}
-
-type OrderStatusLogRepository interface {
-	SaveOrderStatusLog(log models.OrderStatusLog) error
+	SaveOrderWithItems(ctx context.Context, order *models.Order, items []models.OrderItem) error
+	GetOrderByNumber(ctx context.Context, orderNumber string) (*models.Order, error)
+	GetOrderItems(ctx context.Context, orderID int) ([]models.OrderItem, error)
+	UpdateOrderStatus(ctx context.Context, orderID int, status string, processedBy string) error
 }

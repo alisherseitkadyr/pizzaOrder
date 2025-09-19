@@ -7,6 +7,7 @@ import (
 	domain "restaurant-system/services/kitchen-service/domain/models"
 	models "restaurant-system/services/kitchen-service/domain/models"
 	"restaurant-system/services/kitchen-service/domain/ports"
+	"restaurant-system/services/kitchen-service/utils/logger"
 	"time"
 )
 
@@ -14,14 +15,16 @@ type KitchenService struct {
 	workerSvc *WorkerService
 	consumer  ports.MessageConsumer
 	publisher ports.MessagePublisher
+	Logger    *logger.Logger
 }
 
 // Конструктор
-func NewKitchenService(workerSvc *WorkerService, consumer ports.MessageConsumer, publisher ports.MessagePublisher) *KitchenService {
+func NewKitchenService(workerSvc *WorkerService, consumer ports.MessageConsumer, publisher ports.MessagePublisher, serviceName string) *KitchenService {
 	return &KitchenService{
 		workerSvc: workerSvc,
 		consumer:  consumer,
 		publisher: publisher,
+		Logger:    logger.New(serviceName),
 	}
 }
 

@@ -40,7 +40,9 @@ type Order struct {
 	TotalAmount     float64
 	Priority        int
 	Status          string
+	ProcessedBy     *string
 	Items           []OrderItem
+	CompletedAt     *time.Time
 }
 
 type OrderItem struct {

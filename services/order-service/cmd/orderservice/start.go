@@ -1,73 +1,106 @@
 package orderservice
 
 import (
-	"log"
+	"context"
+	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"restaurant-system/services/order-service/adapters/postgres"
 	"restaurant-system/services/order-service/adapters/rabbitmq"
 	"restaurant-system/services/order-service/adapters/web"
+	"restaurant-system/services/order-service/config"
 	"restaurant-system/services/order-service/domain/service"
+	"restaurant-system/services/order-service/utils/logger"
+	"syscall"
 	"time"
 )
 
-func OrderService() {
-	// Connect to PostgreSQL
-	dbPool, err := postgres.NewPostgresPool()
+type Config struct {
+	Port          int
+	MaxConcurrent int
+}
+
+func Start(ctx context.Context, cfg Config) error {
+	// Initialize logger
+	serviceName := "order-service"
+	logger := logger.New(serviceName)
+	logger.Info("service_starting", "Order service starting", "")
+
+	// Load configuration
+	appConfig, err := config.LoadConfig()
 	if err != nil {
-		log.Fatal("Failed to connect to PostgreSQL:", err)
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Connect to PostgreSQL
+	dbPool, err := postgres.NewPostgresPool(appConfig.Database, serviceName)
+	if err != nil {
+		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 	defer dbPool.Close()
 
 	// Connect to RabbitMQ
-	rabbitClient, err := rabbitmq.NewClient("amqp://guest:guest@localhost:5672/")
+	rabbitClient, err := rabbitmq.NewClient(appConfig.RabbitMQ, serviceName)
 	if err != nil {
-		log.Fatal("Failed to connect to RabbitMQ:", err)
+		return fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 	defer rabbitClient.Close()
 
-	// Declare exchange
-	err = rabbitClient.DeclareExchange("orders_topic")
-	if err != nil {
-		log.Fatal("Failed to declare exchange:", err)
-	}
+	// Initialize repositories and services
+	orderRepo := postgres.NewPostgresOrderRepository(dbPool, serviceName)
+	rabbitPublisher := rabbitmq.NewRabbitMQPublisher(rabbitClient, serviceName)
 
-	// Initialize repositories
-	orderRepo := &postgres.PostgresOrderRepository{DB: dbPool}
-	orderItemRepo := &postgres.PostgresOrderItemRepository{DB: dbPool}
-	statusLogRepo := &postgres.PostgresOrderStatusLogRepository{DB: dbPool}
+	orderService := service.NewOrderService(orderRepo, rabbitPublisher)
 
-	// Initialize RabbitMQ publisher
-	rabbitPublisher := &rabbitmq.RabbitMQPublisher{Client: rabbitClient}
-
-	// Initialize order service
-	orderService := service.OrderService{
-		OrderRepository:   orderRepo,
-		OrderItemRepo:     orderItemRepo,
-		StatusLogRepo:     statusLogRepo,
-		RabbitMQPublisher: rabbitPublisher,
-	}
-
-	// Initialize web handler
-	webHandler := web.NewWebHandler(orderService)
+	// HTTP handler
+	webHandler := web.NewWebHandler(orderService, serviceName)
 	router := web.NewRouter(webHandler)
 
-	// Start HTTP server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "3000"
+	// HTTP server
+	port := cfg.Port
+	if port == 0 {
+		port = 3000
 	}
 
 	server := &http.Server{
-		Addr:         ":" + port,
+		Addr:         fmt.Sprintf(":%d", port),
 		Handler:      router,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Order service started on port %s", port)
-	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatal("Failed to start server:", err)
+	// Start server in goroutine
+	serverErr := make(chan error, 1)
+	go func() {
+		logger.Info("server_starting", fmt.Sprintf("Starting HTTP server on port %d", port), "")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// Wait for shutdown signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	case err := <-serverErr:
+		return fmt.Errorf("server error: %w", err)
+	case <-ctx.Done():
+		logger.Info("shutdown_requested", "Shutdown requested via context", "")
+	case sig := <-sigChan:
+		logger.Info("shutdown_signal", fmt.Sprintf("Received signal: %s", sig), "")
 	}
+
+	// Graceful shutdown
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("graceful shutdown failed: %w", err)
+	}
+
+	logger.Info("service_stopped", "Order service stopped gracefully", "")
+	return nil
 }

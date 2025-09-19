@@ -5,15 +5,20 @@ import (
 	"fmt"
 	domain "restaurant-system/services/kitchen-service/domain/models"
 	"restaurant-system/services/kitchen-service/domain/ports"
+	"restaurant-system/services/kitchen-service/utils/logger"
 	"time"
 )
 
 type WorkerService struct {
-	repo ports.WorkerRepository
+	repo   ports.WorkerRepository
+	Logger *logger.Logger
 }
 
-func NewWorkerService(repo ports.WorkerRepository) *WorkerService {
-	return &WorkerService{repo: repo}
+func NewWorkerService(repo ports.WorkerRepository, serviceName string) *WorkerService {
+	return &WorkerService{
+		repo:   repo,
+		Logger: logger.New(serviceName),
+	}
 }
 
 func (s *WorkerService) RegisterWorker(ctx context.Context, name, workerType string) (*domain.Worker, error) {

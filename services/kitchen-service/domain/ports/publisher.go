@@ -2,10 +2,10 @@ package ports
 
 import (
 	"context"
-	"restaurant-system/shared/events"
+	domain "restaurant-system/services/kitchen-service/domain/models"
 )
 
 type MessagePublisher interface {
-	PublishOrderCreated(ctx context.Context, event events.OrderCreated) error
-	PublishStatusUpdate(ctx context.Context, event events.OrderStatusUpdated) error
+	PublishOrderCreated(ctx context.Context, event domain.OrderCreated) error
+	PublishStatusUpdate(ctx context.Context, event domain.OrderStatusUpdated) error
 }

@@ -30,3 +30,27 @@ func NewStatusLog(orderID int64, status OrderStatus, changedBy string, notes *st
 		Notes:     notes,
 	}
 }
+
+type OrderCreated struct {
+	ID              string         `json:"id"`
+	Number          string         `json:"number"`
+	CustomerName    string         `json:"customer_name"`
+	OrderType       string         `json:"order_type"` // dine-in / delivery
+	TableNumber     *int           `json:"table_number,omitempty"`
+	DeliveryAddress *string        `json:"delivery_address,omitempty"`
+	Items           []OrderItemMes `json:"items"`
+	TotalAmount     float64        `json:"total_amount"`
+	Priority        int            `json:"priority"`
+}
+
+type OrderItemMes struct {
+	Name     string  `json:"name"`
+	Quantity int     `json:"quantity"`
+	Price    float64 `json:"price"`
+}
+
+type OrderStatusUpdated struct {
+	ID          string `json:"id"`
+	Status      string `json:"status"` // cooking / ready / completed
+	ProcessedBy string `json:"processed_by,omitempty"`
+}

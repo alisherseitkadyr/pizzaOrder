@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"restaurant-system/shared/events"
+	domain "restaurant-system/services/kitchen-service/domain/models"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -19,7 +19,7 @@ func NewRabbitPublisher(ch *amqp.Channel, exchange string) *RabbitPublisher {
 }
 
 // публикуем OrderCreated
-func (p *RabbitPublisher) PublishOrderCreated(ctx context.Context, event events.OrderCreated) error {
+func (p *RabbitPublisher) PublishOrderCreated(ctx context.Context, event domain.OrderCreated) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal OrderCreated: %w", err)
@@ -38,7 +38,7 @@ func (p *RabbitPublisher) PublishOrderCreated(ctx context.Context, event events.
 }
 
 // публикуем OrderStatusUpdated
-func (p *RabbitPublisher) PublishStatusUpdate(ctx context.Context, event events.OrderStatusUpdated) error {
+func (p *RabbitPublisher) PublishStatusUpdate(ctx context.Context, event domain.OrderStatusUpdated) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal OrderStatusUpdated: %w", err)

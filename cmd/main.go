@@ -3,12 +3,13 @@ package main
 import (
 	"flag"
 	"fmt"
+
 	// "log"
 	"os"
-
 	"restaurant-system/services/order-service/cmd/orderservice"
+
+	"restaurant-system/services/tracking-service/cmd/trackingservice"
 	// "restaurant-system/services/kitchen-service/cmd/kitchenservice"
-	// "restaurant-system/services/tracking-service/cmd/trakingservice"
 )
 
 func main() {
@@ -20,8 +21,8 @@ func main() {
 		orderservice.OrderService()
 	// case "kitchen":
 	// 	kitchenservice.KitchenService()
-	// case "tracking":
-	// 	trackingservice.TrackingService()
+	case "tracking":
+		trackingservice.TrackingService()
 	// case "notification":
 	// 	notification.NotificationService()
 	default:

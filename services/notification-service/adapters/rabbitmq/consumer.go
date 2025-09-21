@@ -62,7 +62,7 @@ func (c *NotificationConsumer) StartConsuming(handler func(models.StatusUpdateMe
 	go func() {
 		for msg := range msgs {
 			var statusUpdate models.StatusUpdateMessage
-			
+
 			// Parse JSON message
 			if err := json.Unmarshal(msg.Body, &statusUpdate); err != nil {
 				log.Printf("Error parsing message: %v", err)

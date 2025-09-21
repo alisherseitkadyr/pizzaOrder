@@ -3,11 +3,11 @@ package models
 import "time"
 
 type OrderStatusResponse struct {
-	OrderNumber          string     `json:"order_number"`
-	CurrentStatus        string     `json:"current_status"`
-	UpdatedAt            time.Time  `json:"updated_at"`
-	EstimatedCompletion  *time.Time `json:"estimated_completion,omitempty"`
-	ProcessedBy          *string    `json:"processed_by,omitempty"`
+	OrderNumber         string     `json:"order_number"`
+	CurrentStatus       string     `json:"current_status"`
+	UpdatedAt           time.Time  `json:"updated_at"`
+	EstimatedCompletion *time.Time `json:"estimated_completion,omitempty"`
+	ProcessedBy         *string    `json:"processed_by,omitempty"`
 }
 
 type StatusHistory struct {

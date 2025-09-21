@@ -7,8 +7,7 @@ import (
 	"time"
 )
 
-type NotificationService struct {
-}
+type NotificationService struct{}
 
 func NewNotificationService() *NotificationService {
 	return &NotificationService{}
@@ -32,8 +31,8 @@ func (s *NotificationService) HandleStatusUpdate(update models.StatusUpdateMessa
 }
 
 func (s *NotificationService) formatNotificationMessage(update models.StatusUpdateMessage) string {
-	message := "Notification for order " + update.OrderNumber + 
-		": Status changed from '" + update.OldStatus + 
+	message := "Notification for order " + update.OrderNumber +
+		": Status changed from '" + update.OldStatus +
 		"' to '" + update.NewStatus + "' by " + update.ChangedBy
 
 	if update.EstimatedReady != nil {
@@ -50,11 +49,11 @@ func (s *NotificationService) printHumanReadableNotification(notification models
 func (s *NotificationService) logStructuredNotification(update models.StatusUpdateMessage) {
 	// Structured JSON log
 	logData := map[string]interface{}{
-		"timestamp":    time.Now().UTC().Format(time.RFC3339),
-		"level":        "DEBUG",
-		"service":      "notification-subscriber",
-		"action":       "notification_received",
-		"message":      "Received status update for order " + update.OrderNumber,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
+		"level":     "DEBUG",
+		"service":   "notification-subscriber",
+		"action":    "notification_received",
+		"message":   "Received status update for order " + update.OrderNumber,
 		"details": map[string]interface{}{
 			"order_number": update.OrderNumber,
 			"new_status":   update.NewStatus,

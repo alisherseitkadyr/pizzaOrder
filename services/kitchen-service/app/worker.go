@@ -7,6 +7,8 @@ import (
 	"restaurant-system/services/kitchen-service/domain/ports"
 	"restaurant-system/services/kitchen-service/utils/logger"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type WorkerService struct {
@@ -21,7 +23,7 @@ func NewWorkerService(repo ports.WorkerRepository, serviceName string) *WorkerSe
 	}
 }
 
-func (s *WorkerService) RegisterWorker(ctx context.Context, name, workerType string) (*domain.Worker, error) {
+func (s *WorkerService) RegisterWorker(ctx context.Context, name, workerType string) error {
 	worker := &domain.Worker{
 		Name:            name,
 		Type:            workerType,
@@ -31,17 +33,48 @@ func (s *WorkerService) RegisterWorker(ctx context.Context, name, workerType str
 		CreatedAt:       time.Now(),
 	}
 	if err := s.repo.Register(ctx, worker); err != nil {
-		return nil, fmt.Errorf("failed to register worker: %w", err)
+		return fmt.Errorf("failed to register worker: %w", err)
 	}
-	return worker, nil
+	return nil
 }
 
-func (s *WorkerService) Heartbeat(ctx context.Context, worker *domain.Worker) error {
+// функция в WorkerService
+func (s *WorkerService) EnsureRegistered(ctx context.Context, name, workerType string) error {
+	existing, err := s.repo.GetByName(ctx, name)
+	if err != nil && err != pgx.ErrNoRows { // адаптировать под используемый драйвер
+		return err
+	}
+	if existing != nil {
+		if existing.Status == domain.WorkerOnline {
+			return fmt.Errorf("worker already online")
+		}
+		// обновляем запись
+		existing.Type = workerType
+		existing.LastSeen = time.Now()
+		existing.Status = domain.WorkerOnline
+		return s.repo.Update(ctx, existing)
+	}
+	// создаём новую запись
+	err = s.RegisterWorker(ctx, name, workerType)
+	return err
+}
+
+func (s *WorkerService) Heartbeat(ctx context.Context, workerName string) error {
+	worker, err := s.GetWorkerByName(ctx, workerName)
+	if err != nil {
+		s.Logger.Error("worker_not_found", "Failed to Heartbeat", "", err)
+		return err
+	}
 	worker.Heartbeat()
 	return s.repo.Update(ctx, worker)
 }
 
-func (s *WorkerService) AddProcessedOrder(ctx context.Context, worker *domain.Worker) error {
+func (s *WorkerService) AddProcessedOrder(ctx context.Context, workerName string) error {
+	worker, err := s.GetWorkerByName(ctx, workerName)
+	if err != nil {
+		s.Logger.Error("worker_not_found", "Failed to Add Prosses Order", "", err)
+		return err
+	}
 	worker.ProcessOrder()
 	return s.repo.Update(ctx, worker)
 }

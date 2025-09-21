@@ -19,20 +19,10 @@ func NewRabbitMQPublisher(client *Client, serviceName string) *RabbitMQPublisher
 	}
 }
 
-func (p *RabbitMQPublisher) PublishOrder(order *models.Order) error {
+func (p *RabbitMQPublisher) PublishOrder(order *models.OrderMessage) error {
 	// Prepare message according to TZ format
-	message := map[string]interface{}{
-		"order_number":     order.OrderNumber,
-		"customer_name":    order.CustomerName,
-		"order_type":       order.OrderType,
-		"table_number":     order.TableNumber,
-		"delivery_address": order.DeliveryAddress,
-		"items":            order.Items,
-		"total_amount":     order.TotalAmount,
-		"priority":         order.Priority,
-	}
 
-	messageBytes, err := json.Marshal(message)
+	messageBytes, err := json.Marshal(order)
 	if err != nil {
 		return fmt.Errorf("failed to marshal order: %w", err)
 	}

@@ -58,7 +58,7 @@ func main() {
 	case "kitchen-worker":
 		config := kitchencmd.Config{
 			WorkerName:        *workerName,
-			OrderTypes:        *orderTypes,
+			OrderType:         *orderTypes,
 			Prefetch:          *prefetch,
 			HeartbeatInterval: *heartbeatInterval,
 		}

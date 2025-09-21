@@ -2,82 +2,119 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	domain "restaurant-system/services/kitchen-service/domain/models"
-	models "restaurant-system/services/kitchen-service/domain/models"
 	"restaurant-system/services/kitchen-service/domain/ports"
 	"restaurant-system/services/kitchen-service/utils/logger"
 	"time"
 )
 
 type KitchenService struct {
-	workerSvc *WorkerService
-	consumer  ports.MessageConsumer
-	publisher ports.MessagePublisher
-	Logger    *logger.Logger
+	workerService    *WorkerService
+	orderConsumer    ports.MessageConsumer
+	statusPublisher  ports.StatusPublisher
+	kitchenOrderRepo ports.KitchenOrderRepository
+	workerName       string
+	logger           *logger.Logger
 }
 
-// Конструктор
-func NewKitchenService(workerSvc *WorkerService, consumer ports.MessageConsumer, publisher ports.MessagePublisher, serviceName string) *KitchenService {
+func NewKitchenService(
+	workerService *WorkerService,
+	orderConsumer ports.MessageConsumer,
+	statusPublisher ports.StatusPublisher,
+	kitchenOrderRepo ports.KitchenOrderRepository,
+	workerName string,
+	serviceName string,
+) *KitchenService {
 	return &KitchenService{
-		workerSvc: workerSvc,
-		consumer:  consumer,
-		publisher: publisher,
-		Logger:    logger.New(serviceName),
+		workerService:    workerService,
+		orderConsumer:    orderConsumer,
+		statusPublisher:  statusPublisher,
+		kitchenOrderRepo: kitchenOrderRepo,
+		workerName:       workerName,
+		logger:           logger.New(serviceName),
 	}
 }
 
-// Запуск слушателя очереди
 func (s *KitchenService) Start(ctx context.Context) error {
-	return s.consumer.ConsumeOrders(ctx, func(message []byte) error {
-		return s.handleOrderMessage(ctx, message)
-	})
-}
+	s.logger.Info("service_starting", "Starting kitchen service", s.workerName)
 
-func (s *KitchenService) handleOrderMessage(ctx context.Context, message []byte) error {
-	var event domain.OrderCreated
-	if err := json.Unmarshal(message, &event); err != nil {
-		return fmt.Errorf("failed to unmarshal OrderCreated: %w", err)
-	}
-
-	// найти работника
-	worker, err := s.workerSvc.GetAvailableWorker(ctx)
+	// Начинаем потреблять заказы
+	messages, err := s.orderConsumer.ConsumeOrders(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to consume orders: %w", err)
 	}
 
-	// отправить статус "cooking"
-	status := domain.OrderStatusUpdated{
-		ID:          event.ID,
-		Status:      string(models.StatusCooking),
-		ProcessedBy: worker.Name,
+	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info("service_stopping", "Stopping kitchen service", s.workerName)
+			return nil
+		case msg, ok := <-messages:
+			if !ok {
+				return fmt.Errorf("orders channel closed")
+			}
+			go s.processOrder(ctx, msg)
+		}
 	}
-	if err := s.publisher.PublishStatusUpdate(ctx, status); err != nil {
-		return err
-	}
-
-	// отметить заказ как обработанный у воркера
-	if err := s.workerSvc.AddProcessedOrder(ctx, &worker); err != nil {
-		return err
-	}
-
-	// конкурентно симулируем готовку
-	go s.simulateCooking(ctx, event.ID, worker.Name)
-
-	return nil
 }
 
-func (s *KitchenService) simulateCooking(ctx context.Context, orderID, workerName string) {
-	time.Sleep(8 * time.Second)
-	update := domain.OrderStatusUpdated{
-		ID:          orderID,
-		Status:      string(models.StatusReady),
-		ProcessedBy: workerName,
+func (s *KitchenService) processOrder(ctx context.Context, msg domain.OrderMessage) {
+	orderNumber := msg.OrderNumber
+	requestID := fmt.Sprintf("order_%s", orderNumber)
+
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("order_panic", fmt.Sprintf("Panic processing order: %v", r), requestID, nil)
+			_ = s.orderConsumer.NackMessage(msg, true)
+		}
+	}()
+
+	s.logger.Info("order_received", fmt.Sprintf("Processing order %s", orderNumber), requestID)
+
+	// cooking started
+	if err := s.kitchenOrderRepo.UpdateOrderStatus(ctx, msg.OrderNumber, domain.StatusCooking, s.workerName); err != nil {
+		s.logger.Error("update_status_failed", "Failed to update cooking status", requestID, err)
+		_ = s.orderConsumer.NackMessage(msg, true)
+		return
 	}
-	if err := s.publisher.PublishStatusUpdate(ctx, update); err != nil {
-		fmt.Printf("⚠️ failed to publish ready status for order %s: %v\n", orderID, err)
-	} else {
-		fmt.Printf("✅ Order %s marked as ready (after 8s)\n", orderID)
+	if err := s.statusPublisher.PublishCookingStarted(ctx, msg, s.workerName); err != nil {
+		s.logger.Error("event_publish_failed", "Failed to publish cooking event", requestID, err)
+	}
+
+	// ограничиваем время готовки
+	cookingCtx, cancel := context.WithTimeout(ctx, msg.CookingTime())
+	defer cancel()
+
+	select {
+	case <-cookingCtx.Done():
+		if cookingCtx.Err() == context.DeadlineExceeded {
+			s.logger.Error("cooking_timeout", "Cooking time exceeded", requestID, cookingCtx.Err())
+			_ = s.orderConsumer.NackMessage(msg, true)
+			return
+		}
+	case <-time.After(msg.CookingTime()):
+		// готово
+	}
+
+	// обновляем статус → ready
+	if err := s.kitchenOrderRepo.UpdateOrderStatus(ctx, orderNumber, domain.StatusReady, s.workerName); err != nil {
+		s.logger.Error("status_update_failed", "Failed to update order to ready", requestID, err)
+		_ = s.orderConsumer.NackMessage(msg, true)
+		return
+	}
+
+	if err := s.statusPublisher.PublishOrderReady(ctx, msg, s.workerName); err != nil {
+		s.logger.Error("event_publish_failed", "Failed to publish ready event", requestID, err)
+	}
+
+	// обновляем статистику
+	if err := s.workerService.AddProcessedOrder(ctx, s.workerName); err != nil {
+		s.logger.Error("worker_update_failed", "Failed to update worker stats", requestID, err)
+	}
+
+	// подтверждаем сообщение
+	if err := s.orderConsumer.AckMessage(msg); err != nil {
+		s.logger.Error("ack_failed", "Failed to ack message", requestID, err)
 	}
 }

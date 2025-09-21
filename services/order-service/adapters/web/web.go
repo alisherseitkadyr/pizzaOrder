@@ -42,13 +42,7 @@ func (h *WebHandler) HandleOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var request struct {
-		CustomerName    string             `json:"customer_name"`
-		OrderType       string             `json:"order_type"`
-		Items           []models.OrderItem `json:"items"`
-		TableNumber     *int               `json:"table_number,omitempty"`
-		DeliveryAddress *string            `json:"delivery_address,omitempty"`
-	}
+	var request models.OrderCreatedRequest
 
 	// Decode request body
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -94,10 +88,10 @@ func (h *WebHandler) HandleOrder(w http.ResponseWriter, r *http.Request) {
 	h.Logger.Debug("order_created", "Order created successfully", requestID)
 
 	// Respond with the created order according to TZ specification
-	response := map[string]interface{}{
-		"order_number": order.OrderNumber,
-		"status":       order.Status,
-		"total_amount": order.TotalAmount,
+	response := models.CreateOrderResponse{
+		OrderNumber: order.OrderNumber,
+		Status:      order.Status,
+		TotalAmount: order.TotalAmount,
 	}
 
 	w.WriteHeader(http.StatusOK)

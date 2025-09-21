@@ -23,7 +23,7 @@ func NewOrderService(repo ports.OrderRepository, publisher ports.RabbitMQPublish
 	}
 }
 
-func (s *OrderService) CreateOrder(ctx context.Context, customerName, orderType string, items []models.OrderItem, tableNumber *int, deliveryAddress *string) (*models.Order, error) {
+func (s *OrderService) CreateOrder(ctx context.Context, customerName, orderType string, items []models.OrderItemRequest, tableNumber *int, deliveryAddress *string) (*models.Order, error) {
 	// Validate order
 	if err := validateOrder(customerName, orderType, items, tableNumber, deliveryAddress); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
@@ -48,19 +48,33 @@ func (s *OrderService) CreateOrder(ctx context.Context, customerName, orderType 
 		DeliveryAddress: deliveryAddress,
 		TotalAmount:     totalAmount,
 		Priority:        priority,
-		Status:          "received",
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+	}
+	var itemsDb []models.OrderItem
+	for _, item := range items {
+		var itemDb models.OrderItem
+		itemDb.Name = item.Name
+		itemDb.Quantity = item.Quantity
+		itemDb.Price = item.Price
+
+		itemsDb = append(itemsDb, itemDb)
 	}
 
 	// Save order with items and status log in single transaction
-	err = s.OrderRepository.SaveOrderWithItems(ctx, order, items)
+	err = s.OrderRepository.SaveOrderWithItems(ctx, order, itemsDb)
 	if err != nil {
 		return nil, fmt.Errorf("failed to save order: %w", err)
 	}
-
+	orderMes := &models.OrderMessage{
+		OrderNumber:     orderNumber,
+		CustomerName:    customerName,
+		OrderType:       orderType,
+		TableNumber:     tableNumber,
+		DeliveryAddress: deliveryAddress,
+		TotalAmount:     totalAmount,
+		Priority:        priority,
+	}
 	// Publish to RabbitMQ
-	err = s.RabbitMQPublisher.PublishOrder(order)
+	err = s.RabbitMQPublisher.PublishOrder(orderMes)
 	if err != nil {
 		// Note: Order is already saved, this is a non-critical error
 		// We might want to implement retry logic or dead letter queue
@@ -91,7 +105,7 @@ func (s *OrderNumberService) GenerateOrderNumber(ctx context.Context) (string, e
 }
 
 // Enhanced validation function
-func validateOrder(customerName, orderType string, items []models.OrderItem, tableNumber *int, deliveryAddress *string) error {
+func validateOrder(customerName, orderType string, items []models.OrderItemRequest, tableNumber *int, deliveryAddress *string) error {
 	// Validate customer name
 	if customerName == "" {
 		return fmt.Errorf("customer_name is required")
@@ -174,7 +188,7 @@ func validateOrder(customerName, orderType string, items []models.OrderItem, tab
 }
 
 // Helper functions
-func calculateTotalAmount(items []models.OrderItem) float64 {
+func calculateTotalAmount(items []models.OrderItemRequest) float64 {
 	var total float64
 	for _, item := range items {
 		total += item.Price * float64(item.Quantity)

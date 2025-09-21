@@ -1,6 +1,7 @@
 package rabbitmq
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	domain "restaurant-system/services/kitchen-service/domain/models"
@@ -8,21 +9,20 @@ import (
 )
 
 type KitchenConsumer struct {
-	client     *Client
-	logger     *logger.Logger
-	prefetch   int
-	orderTypes []string
+	client    *Client
+	logger    *logger.Logger
+	prefetch  int
+	orderType string
 }
 
-func NewKitchenConsumer(client *Client, prefetch int, orderTypes []string) (*KitchenConsumer, error) {
+func NewKitchenConsumer(client *Client, prefetch int, orderType string) (*KitchenConsumer, error) {
 	consumer := &KitchenConsumer{
-		client:     client,
-		logger:     logger.New("kitchen-consumer"),
-		prefetch:   prefetch,
-		orderTypes: orderTypes,
+		client:    client,
+		logger:    logger.New("kitchen-consumer"),
+		prefetch:  prefetch,
+		orderType: orderType,
 	}
 
-	// Declare kitchen queue
 	if err := consumer.setupQueue(); err != nil {
 		return nil, err
 	}
@@ -31,37 +31,21 @@ func NewKitchenConsumer(client *Client, prefetch int, orderTypes []string) (*Kit
 }
 
 func (c *KitchenConsumer) setupQueue() error {
-	// Declare queue
 	queue, err := c.client.DeclareQueue("kitchen_orders")
 	if err != nil {
 		return err
 	}
 
-	// Bind to orders_topic exchange with appropriate routing keys
-	routingKeys := c.generateRoutingKeys()
-	for _, routingKey := range routingKeys {
-		if err := c.client.BindQueue(queue.Name, "orders_topic", routingKey); err != nil {
-			return err
-		}
+	// строго один тип
+	routingKey := fmt.Sprintf("kitchen.%s.*", c.orderType)
+	if err := c.client.BindQueue(queue.Name, "orders_topic", routingKey); err != nil {
+		return err
 	}
 
 	return nil
 }
 
-func (c *KitchenConsumer) generateRoutingKeys() []string {
-	if len(c.orderTypes) == 0 {
-		// Handle all order types
-		return []string{"kitchen.*.*"}
-	}
-
-	var keys []string
-	for _, orderType := range c.orderTypes {
-		keys = append(keys, fmt.Sprintf("kitchen.%s.*", orderType))
-	}
-	return keys
-}
-
-func (c *KitchenConsumer) Consume() (<-chan domain.OrderMessage, error) {
+func (c *KitchenConsumer) ConsumeOrders(ctx context.Context) (<-chan domain.OrderMessage, error) {
 	msgs, err := c.client.Consume("kitchen_orders", "kitchen-worker")
 	if err != nil {
 		return nil, err
@@ -69,24 +53,34 @@ func (c *KitchenConsumer) Consume() (<-chan domain.OrderMessage, error) {
 
 	orderChan := make(chan domain.OrderMessage)
 	go func() {
-		for delivery := range msgs {
-			var order domain.OrderCreated
-			if err := json.Unmarshal(delivery.Body, &order); err != nil {
-				c.logger.Error("message_decode_failed", "Failed to decode order message", "", err)
-				delivery.Nack(false, true) // Requeue
-				continue
-			}
+		defer close(orderChan)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case delivery, ok := <-msgs:
+				if !ok {
+					return
+				}
 
-			// Create message with delivery for acknowledgment
-			orderMsg := domain.OrderMessage{
-				OrderCreated: order,
-				Delivery:     delivery,
+				var order domain.OrderMessage
+				if err := json.Unmarshal(delivery.Body, &order); err != nil {
+					c.logger.Error("message_decode_failed", "Failed to decode order message", "", err)
+					continue
+				}
+				order.Delivery = delivery
+				orderChan <- order
 			}
-
-			orderChan <- orderMsg
 		}
-		close(orderChan)
 	}()
 
 	return orderChan, nil
+}
+
+func (c *KitchenConsumer) AckMessage(msg domain.OrderMessage) error {
+	return msg.Delivery.Ack(false)
+}
+
+func (c *KitchenConsumer) NackMessage(msg domain.OrderMessage, requeue bool) error {
+	return msg.Delivery.Nack(false, requeue)
 }

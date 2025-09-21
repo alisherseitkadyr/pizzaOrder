@@ -2,6 +2,8 @@ package domain
 
 import (
 	"time"
+
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 type OrderStatus string
@@ -14,20 +16,19 @@ const (
 	StatusCancelled OrderStatus = "cancelled"
 )
 
-type OrderCreated struct {
-	OrderNumber     string         `json:"order_number"`
-	CustomerName    string         `json:"customer_name"`
-	OrderType       string         `json:"order_type"`
-	TableNumber     *int           `json:"table_number,omitempty"`
-	DeliveryAddress *string        `json:"delivery_address,omitempty"`
-	Items           []OrderItemMes `json:"items"`
-	TotalAmount     float64        `json:"total_amount"`
-	Priority        int            `json:"priority"`
-	Status          OrderStatus    `json:"status,omitempty"`
-	CreatedAt       time.Time      `json:"created_at,omitempty"`
+type OrderMessage struct {
+	OrderNumber     string
+	CustomerName    string
+	OrderType       string
+	TableNumber     *int
+	DeliveryAddress *string
+	Items           []OrderItemRequest
+	TotalAmount     float64
+	Priority        int
+	Delivery        amqp.Delivery
 }
 
-type OrderItemMes struct {
+type OrderItemRequest struct {
 	Name     string  `json:"name"`
 	Quantity int     `json:"quantity"`
 	Price    float64 `json:"price"`
@@ -44,19 +45,23 @@ type OrderStatusUpdated struct {
 
 type OrderStatusLog struct {
 	ID        int64
-	OrderID   int64
+	OrderID   int
 	Status    OrderStatus
 	ChangedBy string
 	ChangedAt time.Time
 	Notes     *string
+	CreatedAt time.Time
 }
 
-func NewStatusLog(orderID int64, status OrderStatus, changedBy string, notes *string) OrderStatusLog {
-	return OrderStatusLog{
-		OrderID:   orderID,
-		Status:    status,
-		ChangedBy: changedBy,
-		ChangedAt: time.Now(),
-		Notes:     notes,
+func (o *OrderMessage) CookingTime() time.Duration {
+	switch o.OrderType {
+	case "dine_in":
+		return 8 * time.Second
+	case "takeout":
+		return 10 * time.Second
+	case "delivery":
+		return 12 * time.Second
+	default:
+		return 10 * time.Second
 	}
 }

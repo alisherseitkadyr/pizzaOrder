@@ -3,18 +3,18 @@ package kitchenservice
 import (
 	"context"
 	"fmt"
+	"os"
 	"restaurant-system/services/kitchen-service/adapters/postgre"
 	"restaurant-system/services/kitchen-service/adapters/rabbitmq"
 	"restaurant-system/services/kitchen-service/app"
 	"restaurant-system/services/kitchen-service/config"
 	"restaurant-system/services/kitchen-service/utils/logger"
-	"strings"
 	"time"
 )
 
 type Config struct {
 	WorkerName        string
-	OrderTypes        string
+	OrderType         string // теперь один тип, а не слайс
 	Prefetch          int
 	HeartbeatInterval int
 }
@@ -29,15 +29,6 @@ func Start(ctx context.Context, cfg Config) error {
 	appConfig, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	// Parse order types
-	var orderTypes []string
-	if cfg.OrderTypes != "" {
-		orderTypes = strings.Split(cfg.OrderTypes, ",")
-		for i := range orderTypes {
-			orderTypes[i] = strings.TrimSpace(orderTypes[i])
-		}
 	}
 
 	// Connect to PostgreSQL
@@ -64,9 +55,10 @@ func Start(ctx context.Context, cfg Config) error {
 
 	// Initialize repositories and services
 	workerRepo := postgre.NewPostgresWorkerRepo(dbPool, serviceName)
+	kitchenRepo := postgre.NewPostgresKitchenRepo(dbPool, serviceName)
 
-	// Create consumer for kitchen orders
-	consumer, err := rabbitmq.NewKitchenConsumer(rabbitClient, cfg.Prefetch, orderTypes)
+	// Create consumer for kitchen orders (теперь один тип)
+	consumer, err := rabbitmq.NewKitchenConsumer(rabbitClient, cfg.Prefetch, cfg.OrderType)
 	if err != nil {
 		return fmt.Errorf("failed to create kitchen consumer: %w", err)
 	}
@@ -78,11 +70,23 @@ func Start(ctx context.Context, cfg Config) error {
 	workerSvc := app.NewWorkerService(workerRepo, serviceName)
 
 	// Create kitchen service
-	kitchenSvc := app.NewKitchenService(workerSvc, consumer, publisher, serviceName)
+	kitchenSvc := app.NewKitchenService(workerSvc, consumer, publisher, kitchenRepo, cfg.WorkerName, serviceName)
 
-	// Register worker
-	if err := workerSvc.RegisterWorker(ctx, cfg.WorkerName, orderTypes); err != nil {
-		return fmt.Errorf("failed to register worker: %w", err)
+	// Ensure worker registered
+
+	_, err = workerRepo.GetByName(ctx, cfg.WorkerName)
+	if err == nil {
+		return fmt.Errorf("worker already existed : %w", err)
+		os.Exit(1)
+	} else {
+		err := workerSvc.RegisterWorker(ctx, cfg.WorkerName, cfg.OrderType)
+		if err != nil {
+			return fmt.Errorf("failed to ensure worker registered: %w", err)
+		}
+	}
+
+	if err := workerSvc.EnsureRegistered(ctx, cfg.WorkerName, cfg.OrderType); err != nil {
+		return fmt.Errorf("failed to ensure worker registered: %w", err)
 	}
 
 	// Start heartbeat
@@ -95,14 +99,15 @@ func Start(ctx context.Context, cfg Config) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := workerSvc.SendHeartbeat(ctx, cfg.WorkerName); err != nil {
+				if err := workerSvc.Heartbeat(ctx, cfg.WorkerName); err != nil {
 					logger.Error("heartbeat_failed", "Failed to send heartbeat", cfg.WorkerName, err)
 				}
 			}
 		}
 	}()
+
 	// Start processing orders
-	logger.Info("worker_registered", fmt.Sprintf("Worker %s started processing orders", cfg.WorkerName), "")
+	logger.Info("worker_registered", fmt.Sprintf("Worker %s started processing %s orders", cfg.WorkerName, cfg.OrderType), "")
 
 	if err := kitchenSvc.Start(ctx); err != nil {
 		return fmt.Errorf("kitchen service failed: %w", err)

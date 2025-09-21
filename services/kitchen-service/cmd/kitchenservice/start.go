@@ -4,48 +4,54 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"restaurant-system/services/kitchen-service/adapters/postgre"
 	"restaurant-system/services/kitchen-service/adapters/rabbitmq"
 	"restaurant-system/services/kitchen-service/app"
 	"restaurant-system/services/kitchen-service/config"
 	"restaurant-system/services/kitchen-service/utils/logger"
+	"syscall"
 	"time"
 )
 
 type Config struct {
 	WorkerName        string
-	OrderType         string // теперь один тип, а не слайс
+	OrderType         string
 	Prefetch          int
 	HeartbeatInterval int
 }
 
 func Start(ctx context.Context, cfg Config) error {
-	// Initialize logger
+	// Инициализация логгера
 	serviceName := "kitchen-worker"
-	logger := logger.New(serviceName)
-	logger.Info("service_starting", "Kitchen worker starting", "")
+	log := logger.New(serviceName)
+	log.Info("service_starting", "Kitchen worker starting", "")
 
-	// Load configuration
+	// Создаем cancellable context для graceful shutdown
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Загрузка конфигурации
 	appConfig, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
 
-	// Connect to PostgreSQL
+	// Подключение к PostgreSQL
 	dbPool, err := postgre.NewPostgresPool(appConfig.Database, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to connect to PostgreSQL: %w", err)
 	}
 	defer dbPool.Close()
 
-	// Connect to RabbitMQ
+	// Подключение к RabbitMQ
 	rabbitClient, err := rabbitmq.NewClient(appConfig.RabbitMQ, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 	defer rabbitClient.Close()
 
-	// Declare exchanges
+	// Декларация обменников
 	if err := rabbitClient.DeclareExchange("orders_topic", "topic"); err != nil {
 		return fmt.Errorf("failed to declare orders_topic exchange: %w", err)
 	}
@@ -53,65 +59,82 @@ func Start(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("failed to declare notifications_fanout exchange: %w", err)
 	}
 
-	// Initialize repositories and services
+	// Инициализация репозиториев и сервисов
 	workerRepo := postgre.NewPostgresWorkerRepo(dbPool, serviceName)
 	kitchenRepo := postgre.NewPostgresKitchenRepo(dbPool, serviceName)
 
-	// Create consumer for kitchen orders (теперь один тип)
+	// Создание потребителя
 	consumer, err := rabbitmq.NewKitchenConsumer(rabbitClient, cfg.Prefetch, cfg.OrderType)
 	if err != nil {
 		return fmt.Errorf("failed to create kitchen consumer: %w", err)
 	}
 
-	// Create publisher for notifications
+	// Создание издателя
 	publisher := rabbitmq.NewNotificationPublisher(rabbitClient, serviceName)
 
-	// Create worker service
+	// Создание сервисов
 	workerSvc := app.NewWorkerService(workerRepo, serviceName)
-
-	// Create kitchen service
 	kitchenSvc := app.NewKitchenService(workerSvc, consumer, publisher, kitchenRepo, cfg.WorkerName, serviceName)
 
-	// Ensure worker registered
-
-	_, err = workerRepo.GetByName(ctx, cfg.WorkerName)
-	if err == nil {
-		return fmt.Errorf("worker already existed : %w", err)
-		os.Exit(1)
-	} else {
-		err := workerSvc.RegisterWorker(ctx, cfg.WorkerName, cfg.OrderType)
-		if err != nil {
-			return fmt.Errorf("failed to ensure worker registered: %w", err)
-		}
+	// Регистрация воркера
+	if err := workerSvc.RegisterWorker(ctx, cfg.WorkerName, cfg.OrderType); err != nil {
+		return fmt.Errorf("failed to register worker: %w", err)
 	}
 
-	if err := workerSvc.EnsureRegistered(ctx, cfg.WorkerName, cfg.OrderType); err != nil {
-		return fmt.Errorf("failed to ensure worker registered: %w", err)
-	}
+	// Запускаем heartbeat в отдельной goroutine
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
 
-	// Start heartbeat
+	go workerSvc.StartHeartbeat(heartbeatCtx, cfg.WorkerName, time.Duration(cfg.HeartbeatInterval)*time.Second)
+
+	// Канал для ошибок из kitchen service
+	serviceErr := make(chan error, 1)
+
+	// Запускаем обработку заказов в отдельной goroutine
 	go func() {
-		ticker := time.NewTicker(time.Duration(cfg.HeartbeatInterval) * time.Second)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := workerSvc.Heartbeat(ctx, cfg.WorkerName); err != nil {
-					logger.Error("heartbeat_failed", "Failed to send heartbeat", cfg.WorkerName, err)
-				}
-			}
+		log.Info("service_started", fmt.Sprintf("Worker %s started processing %s orders", cfg.WorkerName, cfg.OrderType), "")
+		if err := kitchenSvc.Start(ctx); err != nil {
+			serviceErr <- fmt.Errorf("kitchen service failed: %w", err)
 		}
 	}()
 
-	// Start processing orders
-	logger.Info("worker_registered", fmt.Sprintf("Worker %s started processing %s orders", cfg.WorkerName, cfg.OrderType), "")
+	// Обработка сигналов завершения
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	if err := kitchenSvc.Start(ctx); err != nil {
-		return fmt.Errorf("kitchen service failed: %w", err)
+	// Ждем либо сигнала завершения, либо ошибки сервиса
+	select {
+	case sig := <-sigChan:
+		log.Info("shutdown_signal", fmt.Sprintf("Received signal: %s, initiating graceful shutdown", sig), "")
+
+		// Инициируем graceful shutdown
+		cancel()
+
+		// Даем время на завершение обработки
+		shutdownTimeout := 30 * time.Second
+		select {
+		case <-time.After(shutdownTimeout):
+			log.Info("shutdown_timeout", "Shutdown timeout reached, forcing exit", "")
+		case err := <-serviceErr:
+			if err != nil {
+				log.Error("shutdown_error", "Service error during shutdown", "", err)
+			}
+		}
+
+	case err := <-serviceErr:
+		if err != nil {
+			log.Error("service_error", "Service stopped with error", "", err)
+			cancel() // Отменяем контекст при ошибке
+			return err
+		}
 	}
 
+	// Final cleanup - отмечаем воркера как offline
+	log.Info("shutdown_cleanup", "Performing final cleanup", "")
+	if err := workerSvc.SetWorkerOffline(ctx, cfg.WorkerName); err != nil {
+		log.Error("cleanup_error", "Failed to set worker offline during cleanup", "", err)
+	}
+
+	log.Info("service_stopped", "Kitchen worker stopped gracefully", "")
 	return nil
 }

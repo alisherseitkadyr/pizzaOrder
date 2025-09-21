@@ -39,6 +39,55 @@ func (s *WorkerService) RegisterWorker(ctx context.Context, name, workerType str
 }
 
 // функция в WorkerService
+// Добавляем методы для graceful shutdown
+func (s *WorkerService) StartHeartbeat(ctx context.Context, workerName string, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := s.Heartbeat(ctx, workerName); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (s *WorkerService) SetWorkerOffline(ctx context.Context, workerName string) error {
+	worker, err := s.repo.GetByName(ctx, workerName)
+	if err != nil {
+		return fmt.Errorf("worker not found: %w", err)
+	}
+
+	if err := worker.GoOffline(); err != nil {
+		return fmt.Errorf("failed to set offline: %w", err)
+	}
+
+	return s.repo.Update(ctx, worker)
+}
+
+func (s *WorkerService) SetOfflineForAllWorkers(ctx context.Context) error {
+	workers, err := s.repo.GetAll(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get workers: %w", err)
+	}
+
+	for _, worker := range workers {
+		if worker.Status == domain.WorkerOnline {
+			worker.Status = domain.WorkerOffline
+			worker.LastSeen = time.Now()
+			if err := s.repo.Update(ctx, &worker); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
 func (s *WorkerService) EnsureRegistered(ctx context.Context, name, workerType string) error {
 	existing, err := s.repo.GetByName(ctx, name)
 	if err != nil && err != pgx.ErrNoRows { // адаптировать под используемый драйвер

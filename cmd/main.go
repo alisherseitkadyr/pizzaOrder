@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -42,8 +43,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Контекст и cancel для управления жизненным циклом сервисов
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Используем sync.WaitGroup для отслеживания завершения всех горутин
+	var wg sync.WaitGroup
 
 	// Запуск выбранного сервиса
 	var err error
@@ -53,7 +58,11 @@ func main() {
 			Port:          *port,
 			MaxConcurrent: *maxConcurrent,
 		}
-		err = ordercmd.Start(ctx, config)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err = ordercmd.Start(ctx, config)
+		}()
 
 	case "kitchen-worker":
 		config := kitchencmd.Config{
@@ -62,16 +71,28 @@ func main() {
 			Prefetch:          *prefetch,
 			HeartbeatInterval: *heartbeatInterval,
 		}
-		err = kitchencmd.Start(ctx, config)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err = kitchencmd.Start(ctx, config)
+		}()
 
 	case "tracking-service":
 		config := trackingcmd.Config{
 			Port: *port,
 		}
-		err = trackingcmd.Start(ctx, config)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err = trackingcmd.Start(ctx, config)
+		}()
 
 	case "notification-subscriber":
-		err = notificationcmd.Start(ctx)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err = notificationcmd.Start(ctx)
+		}()
 
 	default:
 		fmt.Printf("Unknown mode: %s\n", *mode)
@@ -89,9 +110,12 @@ func main() {
 
 	<-sigCh
 	log.Println("Shutdown signal received, shutting down gracefully...")
-	cancel()
+	cancel() // Прекращаем обработку запросов
 
-	// Даем время для graceful shutdown
+	// Ждем завершения всех горутин
+	wg.Wait()
+
+	// Даем время для закрытия всех ресурсов (например, базы данных или RabbitMQ)
 	time.Sleep(2 * time.Second)
 	log.Println("Shutdown completed")
 }

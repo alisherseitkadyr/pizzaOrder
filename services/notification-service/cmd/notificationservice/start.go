@@ -8,10 +8,11 @@ import (
 	"restaurant-system/services/notification-service/adapters/rabbitmq"
 	"restaurant-system/services/notification-service/domain/service"
 	"syscall"
+	"time"
 )
 
 func Start(ctx context.Context) error {
-	// Connect to RabbitMQ
+	// Подключаемся к RabbitMQ
 	rabbitURL := "amqp://guest:guest@localhost:5672/"
 	client, err := rabbitmq.NewClient(rabbitURL)
 	if err != nil {
@@ -21,20 +22,20 @@ func Start(ctx context.Context) error {
 
 	log.Println("Connected to RabbitMQ")
 
-	// Create notification consumer
+	// Создаем потребителя уведомлений
 	consumer := rabbitmq.NewNotificationConsumer(client)
 
-	// Setup exchange and queue
+	// Настроим обменник и очередь
 	if err := consumer.Setup(); err != nil {
 		log.Fatal("Failed to setup RabbitMQ:", err)
 	}
 
 	log.Println("RabbitMQ setup completed")
 
-	// Create notification service
+	// Создаем сервис для обработки уведомлений
 	notificationService := service.NewNotificationService()
 
-	// Start consuming messages
+	// Начинаем потреблять сообщения
 	if err := consumer.StartConsuming(notificationService.HandleStatusUpdate); err != nil {
 		log.Fatal("Failed to start consuming:", err)
 	}
@@ -42,14 +43,17 @@ func Start(ctx context.Context) error {
 	log.Println("Notification service started. Waiting for messages...")
 	log.Println("Press Ctrl+C to exit")
 
-	// Wait for termination signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	// Создаем канал для получения сигналов завершения работы
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 
-	// Keep the service running
+	// Ожидаем сигнал завершения
 	select {
-	case <-sigChan:
+	case <-stop:
 		log.Println("Shutting down notification service...")
+		// Делаем паузу перед завершением, чтобы успеть завершить текущие задачи
+		time.Sleep(2 * time.Second)
 	}
+
 	return nil
 }

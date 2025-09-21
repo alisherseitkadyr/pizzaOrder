@@ -10,6 +10,7 @@ import (
 	"restaurant-system/services/order-service/domain/service"
 	"time"
 )
+// services/order-service/cmd/orderservice/start.go
 
 func OrderService() {
 	// Connect to PostgreSQL
@@ -30,6 +31,16 @@ func OrderService() {
 	err = rabbitClient.DeclareExchange("orders_topic")
 	if err != nil {
 		log.Fatal("Failed to declare exchange:", err)
+	}
+
+	// ✅ Declare & bind a queue (example: "kitchen_orders")
+	err = rabbitClient.DeclareAndBindQueue(
+		"kitchen_orders",   // queue name
+		"orders_topic",     // exchange
+		"kitchen.*.*",      // routing key pattern
+	)
+	if err != nil {
+		log.Fatal("Failed to declare/bind queue:", err)
 	}
 
 	// Initialize repositories

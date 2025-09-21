@@ -11,9 +11,9 @@ import (
 	"time"
 
 	kitchencmd "restaurant-system/services/kitchen-service/cmd/kitchenservice"
-	// notificationcmd "restaurant-system/services/notification-service/cmd/notificationservice"
+	notificationcmd "restaurant-system/services/notification-service/cmd/notificationservice"
 	ordercmd "restaurant-system/services/order-service/cmd/orderservice"
-	// trackingcmd "restaurant-system/services/tracking-service/cmd/trackingservice"
+	trackingcmd "restaurant-system/services/tracking-service/cmd/trackingservice"
 )
 
 func main() {
@@ -64,14 +64,14 @@ func main() {
 		}
 		err = kitchencmd.Start(ctx, config)
 
-	// case "tracking-service":
-	// 	config := trackingcmd.Config{
-	// 		Port: *port,
-	// 	}
-	// 	err = trackingcmd.Start(ctx, config)
+	case "tracking-service":
+		config := trackingcmd.Config{
+			Port: *port,
+		}
+		err = trackingcmd.Start(ctx, config)
 
-	// case "notification-subscriber":
-	// 	err = notificationcmd.Start(ctx)
+	case "notification-subscriber":
+		err = notificationcmd.Start(ctx)
 
 	default:
 		fmt.Printf("Unknown mode: %s\n", *mode)
